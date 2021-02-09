@@ -70,8 +70,8 @@ class ModioClient(object):
         print(f"[DEBUG] Request to {dbg_url}")
 
 
-class ModIoObject(object):
-    def __init__(self, client: Client):
+class ModioObject(object):
+    def __init__(self, client: ModioClient):
         self.client = client
 
     @property
@@ -89,8 +89,8 @@ class ModIoObject(object):
         return len(self.data)
 
 
-class Game(ModIoObject):
-    def __init__(self, client: Client, data):
+class Game(ModioObject):
+    def __init__(self, client: ModioClient, data):
         super().__init__(client)
         self.data = data
 
@@ -101,8 +101,8 @@ class Game(ModIoObject):
         return self.client.get_mod(self.id, mod_id)
 
 
-class Mod(ModIoObject):
-    def __init__(self, client: Client, data):
+class Mod(ModioObject):
+    def __init__(self, client: ModioClient, data):
         super().__init__(client)
         self.data = data
 
@@ -116,9 +116,14 @@ class Mod(ModIoObject):
     def get_file(self, file_id: int):
         return self.client.get_file(self.game_id, self.id, file_id)
 
+    def get_latest_file(self):
+        files = self.get_files()
+        files.sort(key=lambda x: -x.timestamp)
+        return files[0]
 
-class File(ModIoObject):
-    def __init__(self, client: Client, data):
+
+class File(ModioObject):
+    def __init__(self, client: ModioClient, data):
         super().__init__(client)
         self.data = data
 

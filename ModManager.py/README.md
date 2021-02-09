@@ -42,7 +42,9 @@ though in most cases it should be sufficient to simply provide the profiles. The
 | `--deploy` | `-d` | switch | Performs the deployment step, moving any files within the staging directory to the mod install directory as dictated by the profile. | Yes |
 | `--cleanup` | `-c` | switch | Performs the cleanup step, removing any recognised mod files from the mod install directory, and cleaning up any now-empty directories. | Yes |
 |||||
-| `--get` | | string | Gets the given property from the profile and prints it to stdout. If multiple profiles are given, then the profile name will also be added to distinguish each item | Yes |
+| `--get` | | string | Gets the given property from the profile and prints it to stdout. If multiple profiles are given, then the profile name will also be added to distinguish each item. | Yes |
+| `--list` | | switch | Lists all profiles currently visible (i.e. the json files in the cache directory). | Yes |
+| `--list-deployed` | | switch | Prints the deployment manifest of the given profile/s, if one is found. | Yes |
 | `profiles` | | list of strings | The profiles to process, Each profile name given should correspond with a .json file in the profile directory (`--profile-dir`) | No |
 
 ## Profile definition
@@ -52,7 +54,7 @@ though in most cases it should be sufficient to simply provide the profiles. The
 | uuid  | string | Uniquely identifying the profile. If this is null when the profile is loaded, a new uuid is generated and written to the file automatically. |
 | name  | string | This is a display name, mostly used for debugging and logging. |
 | id    | integer | This is the id that matches to this item on the mod provider (in this case, [mod.io](https://mod.io)). |
-| install_directory | string (filepath) | This is the directory that all mods should be installed into oupon deployment. |
+| install_directory | string (filepath) | This is the directory that all mods should be installed into upon deployment. |
 | mods | map | The map defining which mods should be active. |
 | mods.key | string | The display name for the mod. |
 | mods.value | integer | The identifier for this mod on the mod provider. |

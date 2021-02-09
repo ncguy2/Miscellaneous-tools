@@ -8,13 +8,14 @@ import json
 import modio
 import os
 import requests
+import shutil
 import subprocess
 import uuid
 import zipfile
 
 import configparser
 config = configparser.ConfigParser()
-pwd = Path(__FILE__).parent
+pwd = Path(__file__).parent
 config_file = pwd / "config.ini"
 if not config_file.exists():
     raise Exception("No configuration file found")
@@ -39,6 +40,15 @@ db_dir = cache_dir / "storage"
 profile_dir = cache_dir / "profiles"
 deployed_file_name = "deployed.txt"
 force_download = False
+
+
+def get_all_children(p: Path):
+    if p.is_dir():
+        for c in p.iterdir():
+            yield from get_all_children(c)
+
+    if p.is_file():
+        yield p
 
 
 def sizeof_fmt(num, suffix='B'):
@@ -110,6 +120,10 @@ class Profile(object):
         self.path.write_text(json.dumps(self.data, indent=2))
 
     @property
+    def reference(self):
+        return self.path.name[:self.path.name.index(".")]
+
+    @property
     def is_valid(self):
         return len(self.data) > 0 and self.name is not None and self.id >= 0 and self.install_directory is not None
 
@@ -128,6 +142,10 @@ class Profile(object):
         d = staging_dir_root / str(self.id)
         d.mkdir(parents=True, exist_ok=True)
         return d
+
+    @property
+    def deployed_file_manifest(self):
+        return self.db_dir / deployed_file_name
 
     @property
     def db_dir(self):
@@ -199,26 +217,25 @@ def run_download(profile: Profile):
     for mod_name, mod_id in profile.mods:
         print(f"Updating {mod_name}")
         mod = client.get_mod(profile.id, mod_id)
-        files = mod.get_files()
-        for file in files:
-            try_download(profile, mod, file)
+        file = mod.get_latest_file()
+        try_download(profile, mod, file)
 
 
 def cleanup(profile: Profile):
-    game_db_dir = profile.db_dir
-    deployed_file = game_db_dir / deployed_file_name
-    if not deployed_file.exists():
+    deployed_file_manifest = profile.deployed_file_manifest
+    if not deployed_file_manifest.exists():
         print("Found no deployment metadata, cannot perform cleanup")
         return
     installed_dir = profile.install_path
-    text = deployed_file.read_text()
+    text = deployed_file_manifest.read_text()
     for line in text.splitlines():
         deployed_file = installed_dir / line
-        if deployed_file.exists():
+        if deployed_file.exists() and deployed_file.is_file():
+            print(f" - Removing {str(deployed_file)}")
             deployed_file.unlink()
 
-    deployed_file.unlink()
     remove_empty_directories(installed_dir, False)
+    deployed_file_manifest.unlink()
 
 
 def deploy(profile: Profile):
@@ -234,12 +251,22 @@ def deploy(profile: Profile):
 
     for child in profile.staging_dir.iterdir():
         print(f"  > Deploying {child}")
-        if child.suffix != ".dll":
+        if child.suffix == ".dll":
+            deployed_lines.append(child.name)
+            target = installed_dir / child.name
+            shutil.move(str(child), str(target))
+        elif child.is_dir():
+            root = child
+            root_path = str(root.parent.resolve())
+            for c in get_all_children(child):
+                path = str(c.resolve())[len(root_path)+1:]
+                deployed_lines.append(path)
+
+            target = installed_dir / child.name
+            shutil.move(str(child), str(target))
+        else:
             print(f"    > Unsupported mod type: {child}")
             continue
-        deployed_lines.append(child.name)
-        target = installed_dir / child.name
-        child.rename(str(target))
 
     print("  > Writing deployment manifest")
     deployed_file.write_text("\n".join(deployed_lines))
@@ -269,6 +296,12 @@ def run_profile(profile: Profile):
     deploy(profile)
 
 
+def get_profiles():
+    global profile_dir
+    for child in profile_dir.iterdir():
+        if child.name.endswith(".json"):
+            yield Profile(child)
+
 def do():
     parser = argparse.ArgumentParser()
 
@@ -296,10 +329,18 @@ def do():
     parser.add_argument("--cleanup", "-c", action="store_true", help="Perform Cleanup")
 
     parser.add_argument("--get", type=str)
+    parser.add_argument("--list", action="store_true")
+    parser.add_argument("--list-deployed", action="store_true")
 
     parser.add_argument("profiles", type=str, nargs="*", help="The profiles to process")
 
     args = parser.parse_args()
+
+    if args.list:
+        print(f"Profiles:")
+        for profile in get_profiles():
+            print(f" - {profile.reference}")
+        return
 
     if args.cache_dir:
         print(str(cache_dir))
@@ -352,6 +393,16 @@ def do():
         profile = Profile(profile_path)
         if not profile.is_valid:
             print(f"Profile found at {profile_path} is not valid")
+            continue
+
+        if args.list_deployed:
+            m = profile.deployed_file_manifest
+            if not m.exists():
+                print(f"No deployment manifest found for {profile.name} at {str(m)}")
+                continue
+            print(f"{profile.name} deployment manifest")
+            for line in m.read_text().splitlines():
+                print(f" - {line}")
             continue
 
         if args.get:
