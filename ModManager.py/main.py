@@ -14,6 +14,7 @@ import uuid
 import zipfile
 
 import configparser
+
 config = configparser.ConfigParser()
 pwd = Path(__file__).parent
 config_file = pwd / "config.ini"
@@ -71,7 +72,7 @@ def remove_empty_directories(path: Path, remove_root: bool = False):
     if not path.is_dir():
         return
 
-        # remove empty subfolders
+    # remove empty subfolders
     files = path.iterdir()
     for f in files:
         remove_empty_directories(f, True)
@@ -154,6 +155,12 @@ class Profile(object):
         return d
 
     @property
+    def patch_dir(self):
+        d = self.db_dir / "patches"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    @property
     def install_path(self):
         return Path(self.install_directory)
 
@@ -221,6 +228,44 @@ def run_download(profile: Profile):
         try_download(profile, mod, file)
 
 
+def cleanup_file(installed_dir: Path, manifest_line: str):
+    print(manifest_line)
+    deployed_file = installed_dir / manifest_line
+    if deployed_file.exists() and deployed_file.is_file():
+        print(f" - Removing {str(deployed_file)}")
+        deployed_file.unlink()
+
+
+def cleanup_patch(profile: Profile, installed_dir: Path, manifest_line: str):
+    split = manifest_line.split("|")
+    file_ref = split[0]
+    patch_name = split[1]
+    patch_file = profile.patch_dir / patch_name
+    file = installed_dir / file_ref
+    if not patch_file.exists():
+        return
+    subprocess.call(["patch", "-p1", "-R", "-i", patch_file, file])
+    patch_file.unlink()
+
+def apply_patch(profile: Profile, source_path, target_path, relative_path):
+    patch_name = None
+    patch_file = None
+    while patch_file is None or patch_file.exists():
+        patch_name = str(uuid.uuid4()) + ".patch"
+        patch_file = profile.patch_dir / patch_name
+
+    # Generate patch
+    diff_cmd = ["diff", "-u", str(target_path), str(source_path)]
+    print(diff_cmd)
+    try:
+        diff = subprocess.check_output(diff_cmd)
+    except subprocess.CalledProcessError as e:
+        diff = e.output.decode()
+    patch_file.write_text(diff)
+    subprocess.call(["patch", "-p1", "-i", str(patch_file), str(target_path)])
+
+    return f"{relative_path}|{patch_name}"
+
 def cleanup(profile: Profile):
     deployed_file_manifest = profile.deployed_file_manifest
     if not deployed_file_manifest.exists():
@@ -229,14 +274,69 @@ def cleanup(profile: Profile):
     installed_dir = profile.install_path
     text = deployed_file_manifest.read_text()
     for line in text.splitlines():
-        deployed_file = installed_dir / line
-        if deployed_file.exists() and deployed_file.is_file():
-            print(f" - Removing {str(deployed_file)}")
-            deployed_file.unlink()
+        if ":" not in line:
+            # Bodge to legacy manifests
+            line += "FILE:"
+        split = line.split(":")
+        prefix = split[0]
+        line = ":".join(split[1:])
+
+        if prefix == "FILE":
+            cleanup_file(installed_dir, line)
+        elif prefix == "PATCH":
+            cleanup_patch(profile, installed_dir, line)
 
     remove_empty_directories(installed_dir, False)
     deployed_file_manifest.unlink()
 
+
+def traverse_file_tree(root, current=None, callback=None, postorder=True, filter=None):
+    if callback is None:
+        # What's the point in traversing...
+        return
+
+    if current is None:
+        current = root
+
+    if not postorder:
+        if filter is None or filter(current):
+            callback(current)
+
+    if current.is_dir():
+        for child in current.iterdir():
+            traverse_file_tree(root, child, callback, postorder)
+
+    if postorder:
+        if filter is None or filter(current):
+            callback(current)
+
+
+def _deploy_root_dir(profile: Profile, root: Path, deployed_lines: list):
+    root_path = str(root.parent.resolve())
+    # for c in get_all_children(child):
+    #     path = str(c.resolve())[len(root_path) + 1:]
+    #     deployed_lines.append("FILE:" + path)
+
+    installed_dir = profile.install_path
+
+    def func(p: Path):
+        path_str = str(p.resolve())[len(root_path) + 1:]
+        target_file = installed_dir / path_str
+        if target_file.exists():
+            # Handle patch generation/conversion
+            if not target_file.name.endswith("cs"):
+                print(" - Unable to generate patch for non-recognised file type")
+                return
+            manifest_line = apply_patch(profile, p, target_file, path_str)
+            deployed_lines.append(f"PATCH:{manifest_line}")
+        else:
+            shutil.move(str(p.resolve()), str(target_file.resolve()))
+            deployed_lines.append(f"FILE:{path_str}")
+
+    traverse_file_tree(root, callback=func, filter=lambda x: x.is_file())
+
+    # target = installed_dir / child.name
+    # shutil.move(str(child), str(target))
 
 def deploy(profile: Profile):
     print(f"Deploying staged mods for {profile.name}")
@@ -256,14 +356,12 @@ def deploy(profile: Profile):
             target = installed_dir / child.name
             shutil.move(str(child), str(target))
         elif child.is_dir():
-            root = child
-            root_path = str(root.parent.resolve())
-            for c in get_all_children(child):
-                path = str(c.resolve())[len(root_path)+1:]
-                deployed_lines.append(path)
-
-            target = installed_dir / child.name
-            shutil.move(str(child), str(target))
+            # TODO remove hard-coded prefix
+            if child.name == "Mods":
+                for c in child.iterdir():
+                    _deploy_root_dir(profile, c, deployed_lines)
+            else:
+                _deploy_root_dir(profile, child, deployed_lines)
         else:
             print(f"    > Unsupported mod type: {child}")
             continue
@@ -301,6 +399,7 @@ def get_profiles():
     for child in profile_dir.iterdir():
         if child.name.endswith(".json"):
             yield Profile(child)
+
 
 def do():
     parser = argparse.ArgumentParser()
